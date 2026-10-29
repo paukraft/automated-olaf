@@ -3,7 +3,7 @@ import { isSameDay } from "date-fns";
 import { ApiHandler } from "sst/node/api";
 import { Config } from "sst/node/config";
 import { redis, twitterClient, twitterV1Client } from "utils/twitter-auth";
-import { z } from "zod";
+import { generatedTweetSchema, validateTweetLength } from "./tweet-validation";
 
 const ACTUALLY_SEND_TWEET = true;
 
@@ -29,18 +29,18 @@ export const handler = ApiHandler(async (_evt) => {
     )} the ${today.getDate()}th of ${today.toLocaleString("en-US", {
       month: "long",
     })}`,
-    schema: z
-      .object({
-        response: z.object({
-          tweet: z.string().max(280),
-          threadTweets: z.array(z.string().max(280)),
-        }),
-      })
-      .describe(
-        "threadTweets should be an array of tweets each max 280 chars long but min 200 chars long, so split it up"
-      ),
+    schema: generatedTweetSchema,
     cacheTtlSeconds: 60, // 1 minute
   });
+
+  // Validate length here: the SDK logs schema failures as errors before throwing.
+  const data = validateTweetLength(tpResponse.message.data);
+  if (data === null) {
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ didTweet: false, reason: "tweet_too_long" }),
+    };
+  }
 
   const mediaAttachments = tpResponse.mediaAttachments!;
   const imageUrl = mediaAttachments[mediaAttachments.length - 1].url;
@@ -48,8 +48,6 @@ export const handler = ApiHandler(async (_evt) => {
   // // Buffer of the image
   const imagaArrayBuffer = await (await fetch(imageUrl)).arrayBuffer();
   const imageBuffer = Buffer.from(imagaArrayBuffer);
-
-  const data = tpResponse.message?.data?.response;
 
   const lastTweeted = new Date((await redis.get("lastTweeted")) as number);
   const lastTweetedToday = isSameDay(lastTweeted, new Date());
